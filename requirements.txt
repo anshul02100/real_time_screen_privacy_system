@@ -1,3 +1,5 @@
 opencv-python
 mediapipe
 pygame
+dlib
+a working camera
