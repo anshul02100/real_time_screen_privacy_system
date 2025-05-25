@@ -19,5 +19,4 @@ This project monitors the user's gaze and the number of faces visible to determi
   
 ## Usage :-
 1. Clone the repository and install the dependencies.
-2. Place `alert.mp3` and the `gaze_tracking` folder in the project directory.
-3. Run the script: python face_gaze.py
+2. Run the script: python face_gaze.py
