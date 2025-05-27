@@ -1,4 +1,4 @@
 opencv-python
 mediapipe
-pygame
-dlib
+numpy
+pillow
