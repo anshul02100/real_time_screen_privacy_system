@@ -96,15 +96,26 @@ class GazeTracking:
     def horizontal_ratio_one_eye(self, eye):
         if eye.pupil.x == 0:
             return None
-        xs = [p[0] for p in eye.eye_coords if p is not None]
-        if not xs:
-            return None
-        min_x = min(xs)
-        max_x = max(xs)
+    
+        if eye.side == 0:
+            # Left eye: landmarks 33 and 133
+            left_corner = eye.landmarks.landmark[33]
+            right_corner = eye.landmarks.landmark[133]
+        else:
+            # Right eye: landmarks 263 and 362
+            left_corner = eye.landmarks.landmark[263]
+            right_corner = eye.landmarks.landmark[362]
+    
+        min_x = int(left_corner.x * eye.width)
+        max_x = int(right_corner.x * eye.width)
+    
         eye_width = max_x - min_x
         if eye_width == 0:
             return None
-        return (eye.pupil.x - min_x) / eye_width
+    
+        ratio = (eye.pupil.x - min_x) / eye_width
+        return ratio
+
 
     def get_average_horizontal_ratio(self):
         if not self.pupils_located():
