@@ -56,7 +56,7 @@ class GazeTracking:
     def __init__(self):
         self.mp_face_mesh = mp.solutions.face_mesh
         self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
+            max_num_faces=5,  # Allow up to 5 faces
             refine_landmarks=True,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
@@ -65,14 +65,17 @@ class GazeTracking:
         self.eye_right = None
         self.frame = None
         self.landmarks = None
+        self.num_faces = 0
 
     def refresh(self, frame):
         try:
             self.frame = frame
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.face_mesh.process(rgb_frame)
+            self.num_faces = 0
             if results.multi_face_landmarks:
-                landmarks = results.multi_face_landmarks[0]
+                self.num_faces = len(results.multi_face_landmarks)
+                landmarks = results.multi_face_landmarks[0]  # Just use the first face for gaze
                 self.eye_left = Eye(frame, landmarks, 0)
                 self.eye_right = Eye(frame, landmarks, 1)
                 self.landmarks = landmarks
@@ -85,6 +88,7 @@ class GazeTracking:
             self.eye_left = None
             self.eye_right = None
             self.landmarks = None
+            self.num_faces = 0
 
     def pupils_located(self):
         return self.eye_left is not None and self.eye_right is not None
@@ -112,11 +116,10 @@ class GazeTracking:
         return (left + right) / 2
 
     def get_head_yaw(self):
-        # Return normalized horizontal difference between nose and eye centers
         if not self.pupils_located() or self.landmarks is None:
             return None
         try:
-            nose_idx = 1  # Nose tip landmark
+            nose_idx = 1
             left_eye_center = np.mean(self.eye_left.eye_coords, axis=0)
             right_eye_center = np.mean(self.eye_right.eye_coords, axis=0)
             nose = self.landmarks.landmark[nose_idx]
@@ -135,7 +138,6 @@ class FullScreenBlur:
     def show(self):
         if self.overlay:
             return
-        # Grab all screens and downscale for speed
         screenshot = ImageGrab.grab(all_screens=True)
         small = screenshot.resize((screenshot.width // 4, screenshot.height // 4), Image.BILINEAR)
         blurred = small.filter(ImageFilter.GaussianBlur(radius=15))
@@ -168,8 +170,8 @@ class App:
         self.calibration_data = []
 
         self.calibrated_ratio = None
-        self.blur_threshold = 0.15  # Lower threshold for better tolerance
-        self.yaw_threshold = 0.07  # Sensitivity for head yaw compensation
+        self.blur_threshold = 0.15
+        self.yaw_threshold = 0.07
         self.recent_ratios = []
         self.smoothing_frames = 7
         self.look_away_start = None
@@ -183,12 +185,13 @@ class App:
         self.canvas = tk.Canvas(window, width=640, height=480)
         self.canvas.pack()
 
-        self.btn_text = tk.StringVar()
-        self.btn_text.set("Start Gaze Blur")
-        self.btn = tk.Button(window, textvariable=self.btn_text, width=15, command=self.toggle_gaze)
-        self.btn.pack(side=tk.LEFT, padx=10)
+        self.start_btn = tk.Button(window, text="Start", width=10, command=self.start_gaze)
+        self.start_btn.pack(side=tk.LEFT, padx=10)
 
-        self.calib_btn = tk.Button(window, text="Calibrate Gaze", width=15, command=self.start_calibration)
+        self.stop_btn = tk.Button(window, text="Stop", width=10, command=self.stop_gaze)
+        self.stop_btn.pack(side=tk.LEFT, padx=10)
+
+        self.calib_btn = tk.Button(window, text="Calibrate", width=10, command=self.start_calibration)
         self.calib_btn.pack(side=tk.LEFT, padx=10)
 
         self.status_label = tk.Label(window, text="Status: Not running")
@@ -200,20 +203,19 @@ class App:
         self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.window.mainloop()
 
-    def toggle_gaze(self):
-        self.is_running = not self.is_running
-        if self.is_running:
-            self.btn_text.set("Stop Gaze Blur")
-            self.status_label.config(text="Status: Running")
-            self.look_away_start = None
-            self.recent_ratios = []
-        else:
-            self.btn_text.set("Start Gaze Blur")
-            self.status_label.config(text="Status: Stopped")
-            self.look_away_start = None
-            self.recent_ratios = []
-            self.blur_overlay.hide()
-            self.alert_triggered = False
+    def start_gaze(self):
+        self.is_running = True
+        self.status_label.config(text="Status: Running")
+        self.look_away_start = None
+        self.recent_ratios = []
+
+    def stop_gaze(self):
+        self.is_running = False
+        self.status_label.config(text="Status: Stopped")
+        self.look_away_start = None
+        self.recent_ratios = []
+        self.blur_overlay.hide()
+        self.alert_triggered = False
 
     def start_calibration(self):
         if not self.is_running:
@@ -240,9 +242,7 @@ class App:
             self.alert_triggered = False
 
     def play_notification_sound(self):
-        if not self.alert_triggered:
-            self.alert_triggered = True
-            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS)
+        winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS)
 
     def update(self):
         ret, frame = self.cap.read()
@@ -254,33 +254,35 @@ class App:
 
         if self.is_running:
             self.gaze.refresh(frame)
-            current_ratio = self.gaze.get_average_horizontal_ratio()
-            smooth_ratio = self._get_smoothed_ratio(current_ratio)
-
-            # Apply yaw compensation:
-            head_yaw = self.gaze.get_head_yaw()
-            if head_yaw is not None and abs(head_yaw) > self.yaw_threshold:
-                # Consider head turned too much, so don't trigger blur
-                self.look_away_start = None
-                self.remove_blur_overlay()
-                self._display_status(frame, "Head turned - ignoring gaze", (255, 255, 0))
+            if self.gaze.num_faces > 1:
+                self._display_status(frame, f"Multiple Faces Detected! ({self.gaze.num_faces})", (0, 0, 255))
+                self.play_notification_sound()
+                self.show_blur_overlay()
             else:
-                if self.is_calibrating:
-                    self._handle_calibration(smooth_ratio)
-                else:
-                    if self.calibrated_ratio is None:
-                        self._display_status(frame, 'Please calibrate gaze', (0, 255, 255))
-                        self.look_away_start = None
-                    else:
-                        if smooth_ratio is not None:
-                            self._handle_gaze_blur(smooth_ratio, frame)
-                        else:
-                            self.look_away_start = None
-                            self.remove_blur_overlay()
-                            self._display_status(frame, 'Face/Eyes not detected', (0, 255, 255))
-
-                if smooth_ratio is not None and self.calibrated_ratio is not None and abs(smooth_ratio - self.calibrated_ratio) <= self.blur_threshold:
+                current_ratio = self.gaze.get_average_horizontal_ratio()
+                smooth_ratio = self._get_smoothed_ratio(current_ratio)
+                head_yaw = self.gaze.get_head_yaw()
+                if head_yaw is not None and abs(head_yaw) > self.yaw_threshold:
+                    self.look_away_start = None
                     self.remove_blur_overlay()
+                    self._display_status(frame, "Head turned - ignoring gaze", (255, 255, 0))
+                else:
+                    if self.is_calibrating:
+                        self._handle_calibration(smooth_ratio)
+                    else:
+                        if self.calibrated_ratio is None:
+                            self._display_status(frame, 'Please calibrate gaze', (0, 255, 255))
+                            self.look_away_start = None
+                        else:
+                            if smooth_ratio is not None:
+                                self._handle_gaze_blur(smooth_ratio, frame)
+                            else:
+                                self.look_away_start = None
+                                self.remove_blur_overlay()
+                                self._display_status(frame, 'Face/Eyes not detected', (0, 255, 255))
+
+                    if smooth_ratio is not None and self.calibrated_ratio is not None and abs(smooth_ratio - self.calibrated_ratio) <= self.blur_threshold:
+                        self.remove_blur_overlay()
         else:
             self._display_status(frame, 'Gaze Blur OFF', (255, 255, 255))
             self.look_away_start = None
@@ -340,4 +342,4 @@ class App:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = App(root, "Gaze Blur with Yaw Compensation and Full Screen Blur")
+    app = App(root, "Gaze Blur with Face Alert")
